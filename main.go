@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -19,14 +18,14 @@ import (
 )
 
 var (
-	UUID       = getEnv("UUID", "b64c9a01-3f09-4dea-a0f1-dc85e5a3ac19")
-	DOMAIN     = getEnv("DOMAIN", "1234.abc.com")
-	SUB_PATH   = getEnv("SUB_PATH", "dc85e5a3ac19/sub")
-	NAME       = getEnv("NAME", "katabump")
-	PORT       = getEnvInt("PORT", 20102)
+	UUID        = getEnv("UUID", "b64c9a01-3f09-4dea-a0f1-dc85e5a3ac19")
+	DOMAIN      = getEnv("DOMAIN", "1234.abc.com")
+	SUB_PATH    = getEnv("SUB_PATH", "dc85e5a3ac19/sub")
+	NAME        = getEnv("NAME", "katabump")
+	PORT        = getEnvInt("PORT", 20102)
 	AUTO_ACCESS = getEnvBool("AUTO_ACCESS", false)
 
-	ISP        = "Unknown"
+	ISP         = "Unknown"
 	DNS_SERVERS = []string{"8.8.4.4", "1.1.1.1"}
 )
 
@@ -78,13 +77,12 @@ func resolveHost(host string) (string, error) {
 	if net.ParseIP(host) != nil {
 		return host, nil
 	}
-	// 先用系统解析
 	ips, err := net.LookupIP(host)
 	if err == nil && len(ips) > 0 {
 		return ips[0].String(), nil
 	}
-	// 再尝试 HTTP DNS
-	for _, dnsServer := range DNS_SERVERS {
+	// HTTP DNS fallback
+	for _, _ = range DNS_SERVERS {
 		url := fmt.Sprintf("https://dns.google/resolve?name=%s&type=A", host)
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, err := client.Get(url)
@@ -320,7 +318,7 @@ func websocketReader(ws *websocket.Conn) io.Reader {
 }
 
 func websocketWriter(ws *websocket.Conn) io.Writer {
-	pw, pr := io.Pipe()
+	pr, pw := io.Pipe()
 	go func() {
 		defer ws.Close()
 		buf := make([]byte, 4096)
