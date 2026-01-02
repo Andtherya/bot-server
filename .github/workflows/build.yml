@@ -1,4 +1,4 @@
-name: Build Go Linux AMD64
+name: Build Go Linux AMD64 Static Binary
 
 on:
   push:
@@ -12,27 +12,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      # 1️⃣ Checkout 源码
+      - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2️⃣ 安装 Go
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: "1.21"  # 你可以换成最新稳定版本
+          go-version: '1.21' # 你可以换成最新稳定版本
 
-      - name: Enable CGO disabled for static binary
+      # 3️⃣ 确保依赖齐全
+      - name: Prepare Go modules
         run: |
-          echo "CGO_ENABLED=0" >> $GITHUB_ENV
+          go mod tidy
+          go mod download
 
+      # 4️⃣ 构建静态 Linux AMD64 二进制
       - name: Build static Linux AMD64 binary
         run: |
           mkdir -p dist
           echo "Building bot_server..."
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/bot_server main.go
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/bot_server main.go
 
+      # 5️⃣ 列出输出文件确认
       - name: List dist folder
         run: ls -lh dist
 
+      # 6️⃣ 上传二进制作为 artifact
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
