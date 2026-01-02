@@ -220,7 +220,7 @@ func wsTCPForward(ws *websocket.Conn, host string, port int, firstPayload []byte
 	}
 	defer conn.Close()
 
-	// 发送第一个 payload
+	// 发送首包
 	if len(firstPayload) > 0 {
 		conn.Write(firstPayload)
 	}
@@ -239,7 +239,6 @@ func wsTCPForward(ws *websocket.Conn, host string, port int, firstPayload []byte
 	}()
 
 	// WS -> TCP
-	buf := make([]byte, 4096)
 	for {
 		_, msg, err := ws.ReadMessage()
 		if err != nil {
