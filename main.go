@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -24,18 +22,16 @@ var (
 	NAME        = getEnv("NAME", "katabump")
 	PORT        = getEnvInt("PORT", 20102)
 	AUTO_ACCESS = getEnvBool("AUTO_ACCESS", false)
-
 	ISP         = "Unknown"
-	DNS_SERVERS = []string{"8.8.4.4", "1.1.1.1"}
 )
 
+// ---------------- 环境变量 ----------------
 func getEnv(key, def string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
 	}
 	return def
 }
-
 func getEnvInt(key string, def int) int {
 	if val := os.Getenv(key); val != "" {
 		var i int
@@ -44,7 +40,6 @@ func getEnvInt(key string, def int) int {
 	}
 	return def
 }
-
 func getEnvBool(key string, def bool) bool {
 	if val := os.Getenv(key); val != "" {
 		return val == "true" || val == "1"
@@ -70,46 +65,6 @@ func GetISP() {
 		return
 	}
 	ISP = fmt.Sprintf("%s-%s", data.CountryCode, strings.ReplaceAll(data.ISP, " ", "_"))
-}
-
-// ---------------- 自定义 DNS ----------------
-func resolveHost(host string) (string, error) {
-	if net.ParseIP(host) != nil {
-		return host, nil
-	}
-	ips, err := net.LookupIP(host)
-	if err == nil && len(ips) > 0 {
-		return ips[0].String(), nil
-	}
-	// HTTP DNS fallback
-	for _, _ = range DNS_SERVERS {
-		url := fmt.Sprintf("https://dns.google/resolve?name=%s&type=A", host)
-		client := &http.Client{Timeout: 5 * time.Second}
-		resp, err := client.Get(url)
-		if err != nil {
-			continue
-		}
-		var result struct {
-			Status int `json:"Status"`
-			Answer []struct {
-				Type int    `json:"type"`
-				Data string `json:"data"`
-			} `json:"Answer"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			resp.Body.Close()
-			continue
-		}
-		resp.Body.Close()
-		if result.Status == 0 && len(result.Answer) > 0 {
-			for _, ans := range result.Answer {
-				if ans.Type == 1 {
-					return ans.Data, nil
-				}
-			}
-		}
-	}
-	return "", fmt.Errorf("failed to resolve %s", host)
 }
 
 // ---------------- HTTP 订阅 ----------------
@@ -139,9 +94,7 @@ func subscribeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------- WebSocket 协议处理 ----------------
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
+var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := upgrader.Upgrade(w, r, nil)
@@ -156,18 +109,22 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	uuidBytes, _ := hex.DecodeString(strings.ReplaceAll(UUID, "-", ""))
-	if len(msg) > 17 && msg[0] == 0 && bytes.Equal(msg[1:17], uuidBytes) {
-		handleVlessConnection(ws, msg)
+	if len(msg) > 17 && msg[0] == 0 && string(msg[1:17]) == string(uuidBytes) {
+		handleVless(ws, msg)
 		return
 	}
 
-	if !handleTrojanConnection(ws, msg) {
+	if !handleTrojan(ws, msg) {
 		ws.Close()
 	}
 }
 
 // ---------------- VLESS 转发 ----------------
-func handleVlessConnection(ws *websocket.Conn, msg []byte) {
+func handleVless(ws *websocket.Conn, msg []byte) {
+	if len(msg) < 19 {
+		ws.Close()
+		return
+	}
 	i := int(msg[17]) + 19
 	if i+2 > len(msg) {
 		ws.Close()
@@ -188,10 +145,6 @@ func handleVlessConnection(ws *websocket.Conn, msg []byte) {
 		host = fmt.Sprintf("%d.%d.%d.%d", msg[i], msg[i+1], msg[i+2], msg[i+3])
 		i += 4
 	case 3:
-		if i >= len(msg) {
-			ws.Close()
-			return
-		}
 		l := int(msg[i])
 		i++
 		if i+l > len(msg) {
@@ -205,38 +158,16 @@ func handleVlessConnection(ws *websocket.Conn, msg []byte) {
 		return
 	}
 
-	duplex := make(chan struct{})
-	go func() {
-		ip, err := resolveHost(host)
-		if err != nil {
-			ip = host
-		}
-		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
-		if err != nil {
-			ws.Close()
-			return
-		}
-		defer conn.Close()
-
-		if i < len(msg) {
-			conn.Write(msg[i:])
-		}
-
-		go func() { io.Copy(conn, websocketReader(ws)) }()
-		io.Copy(websocketWriter(ws), conn)
-		close(duplex)
-	}()
-	<-duplex
+	go wsTCPForward(ws, host, port, msg[i:])
 }
 
 // ---------------- Trojan 转发 ----------------
-func handleTrojanConnection(ws *websocket.Conn, msg []byte) bool {
+func handleTrojan(ws *websocket.Conn, msg []byte) bool {
 	if len(msg) < 58 {
 		return false
 	}
-	recvHash := string(msg[:56])
 	hash := sha256.Sum224([]byte(UUID))
-	if hex.EncodeToString(hash[:]) != recvHash {
+	if string(hex.EncodeToString(hash[:])) != string(msg[:56]) {
 		return false
 	}
 	offset := 56
@@ -249,6 +180,7 @@ func handleTrojanConnection(ws *websocket.Conn, msg []byte) bool {
 	offset += 1
 	atyp := msg[offset]
 	offset += 1
+
 	var host string
 	var port int
 	switch atyp {
@@ -275,62 +207,47 @@ func handleTrojanConnection(ws *websocket.Conn, msg []byte) bool {
 	port = int(msg[offset])<<8 | int(msg[offset+1])
 	offset += 2
 
-	if offset+2 <= len(msg) && msg[offset] == 0x0d && msg[offset+1] == 0x0a {
-		offset += 2
-	}
-
-	go func() {
-		ip, err := resolveHost(host)
-		if err != nil {
-			ip = host
-		}
-		conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", ip, port))
-		if err != nil {
-			ws.Close()
-			return
-		}
-		defer conn.Close()
-
-		if offset < len(msg) {
-			conn.Write(msg[offset:])
-		}
-
-		go func() { io.Copy(conn, websocketReader(ws)) }()
-		io.Copy(websocketWriter(ws), conn)
-	}()
+	go wsTCPForward(ws, host, port, msg[offset:])
 	return true
 }
 
-// ---------------- WS 读写转换 ----------------
-func websocketReader(ws *websocket.Conn) io.Reader {
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		for {
-			_, msg, err := ws.ReadMessage()
-			if err != nil {
-				return
-			}
-			pw.Write(msg)
-		}
-	}()
-	return pr
-}
+// ---------------- TCP ↔ WS 转发 ----------------
+func wsTCPForward(ws *websocket.Conn, host string, port int, firstPayload []byte) {
+	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		ws.Close()
+		return
+	}
+	defer conn.Close()
 
-func websocketWriter(ws *websocket.Conn) io.Writer {
-	pr, pw := io.Pipe()
+	// 发送第一个 payload
+	if len(firstPayload) > 0 {
+		conn.Write(firstPayload)
+	}
+
+	// TCP -> WS
 	go func() {
-		defer ws.Close()
 		buf := make([]byte, 4096)
 		for {
-			n, err := pr.Read(buf)
+			n, err := conn.Read(buf)
 			if err != nil {
+				ws.Close()
 				return
 			}
 			ws.WriteMessage(websocket.BinaryMessage, buf[:n])
 		}
 	}()
-	return pw
+
+	// WS -> TCP
+	buf := make([]byte, 4096)
+	for {
+		_, msg, err := ws.ReadMessage()
+		if err != nil {
+			conn.Close()
+			return
+		}
+		conn.Write(msg)
+	}
 }
 
 // ---------------- main ----------------
